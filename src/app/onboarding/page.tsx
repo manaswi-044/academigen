@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, ArrowRight, CheckCircle2, UploadCloud } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
 
 export default function OnboardingPage() {
   const [step, setStep] = useState(1);
@@ -10,15 +11,32 @@ export default function OnboardingPage() {
   const [language, setLanguage] = useState("");
   const [template, setTemplate] = useState("default");
   const router = useRouter();
+  const supabase = createClient();
 
   const handleNext = () => setStep((s) => Math.min(s + 1, 3));
   const handlePrev = () => setStep((s) => Math.max(s - 1, 1));
 
-  const handleFinish = () => {
-    // Save to localStorage
+  const handleFinish = async () => {
+    // 1. Save to localStorage as offline fallback
     if (typeof window !== "undefined") {
       localStorage.setItem("academigen_prefs", JSON.stringify({ subject, language, template }));
     }
+
+    // 2. Save to Supabase Profiles table
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        await supabase.from('profiles').upsert({
+          id: user.id,
+          subject,
+          language,
+          template_choice: template
+        });
+      }
+    } catch (err) {
+      console.error("Failed to sync onboarding to cloud:", err);
+    }
+
     router.push("/dashboard");
   };
 

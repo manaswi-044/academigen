@@ -72,6 +72,19 @@ export async function getAllDocuments(): Promise<Document[]> {
   }
 }
 
+// 3.1 GET SINGLE DOCUMENT LOCALLY
+export async function getDocumentLocally(id: string): Promise<Document | null> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(["documents"], "readonly");
+    const store = transaction.objectStore("documents");
+    const request = store.get(id);
+    
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = (e: any) => reject(e.target.error);
+  });
+}
+
 // 4. ADD TO SYNC QUEUE
 export async function queueForSync(docId: string): Promise<void> {
   const db = await openDB();
@@ -88,6 +101,10 @@ export async function queueForSync(docId: string): Promise<void> {
 // 5. PROCESS SYNC QUEUE
 export async function processSyncQueue(): Promise<void> {
   const db = await openDB();
+  // We use dynamic import for createClient to avoid circular dependencies or early initialization issues
+  const { createClient } = await import("@/lib/supabase/client");
+  const supabase = createClient();
+
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(["syncQueue"], "readonly");
     const store = transaction.objectStore("syncQueue");
@@ -95,14 +112,42 @@ export async function processSyncQueue(): Promise<void> {
     
     request.onsuccess = async () => {
       const queue = request.result || [];
+      if (queue.length === 0) {
+        resolve();
+        return;
+      }
+
       for (const item of queue) {
-        console.log(`will sync: ${item.id}`);
-        // In Phase 2: call Supabase upsert here
-        
-        // Remove from queue after success log
-        const deleteTx = db.transaction(["syncQueue"], "readwrite");
-        const deleteStore = deleteTx.objectStore("syncQueue");
-        deleteStore.delete(item.id);
+        try {
+          // Fetch the full document from the documents store
+          const doc = await getDocumentLocally(item.id);
+          
+          if (doc) {
+            console.log(`Syncing document to cloud: ${doc.id}`);
+            
+            const { error: syncError } = await supabase.from('documents').upsert({
+              id: doc.id,
+              title: doc.title || "Untitled Record",
+              content_json: doc.content_json || {},
+              subject: doc.subject,
+              language: doc.language,
+              updated_at: new Date(doc.updated_at).toISOString()
+            });
+
+            if (syncError) {
+              console.error(`Cloud sync failed for ${doc.id}:`, syncError.message);
+              continue; // Skip this item for now
+            }
+          }
+
+          // Remove from queue after successful sync or if document was deleted locally
+          const deleteTx = db.transaction(["syncQueue"], "readwrite");
+          const deleteStore = deleteTx.objectStore("syncQueue");
+          deleteStore.delete(item.id);
+          
+        } catch (err) {
+          console.error(`Error processing sync item ${item.id}:`, err);
+        }
       }
       resolve();
     };
