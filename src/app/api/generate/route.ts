@@ -2,38 +2,63 @@ export const runtime = 'nodejs'
 
 import { aiLimiter } from '@/lib/ratelimit'
 import { createClient } from '@/lib/supabase/server'
+import {
+  generateWithClaude,
+  generateWithGroq,
+  generateOfflineTemplate,
+  type GenerateRequest
+} from '@/lib/ai/generate'
 
 export async function POST(request: Request) {
-  // 1. Get user session
+  // 1. Auth guard
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) {
     return Response.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  // 2. Check rate limit
-  const { success, limit, remaining, reset } = await aiLimiter.limit(user.id)
+  // 2. Rate limit
+  const { success } = await aiLimiter.limit(user.id)
   if (!success) {
     return Response.json(
       { error: 'Limit reached. Try again in 1 hour.' },
-      {
-        status: 429,
-        headers: {
-          'X-RateLimit-Limit': String(limit),
-          'X-RateLimit-Remaining': String(remaining),
-          'X-RateLimit-Reset': String(reset)
-        }
-      }
+      { status: 429 }
     )
   }
 
-  // 3. Parse request body
-  const { programTitle, language, subject } = await request.json()
+  // 3. Parse body
+  const body = await request.json() as GenerateRequest
 
-  // 4. AI generation placeholder — Phase 3 will wire Claude here
-  return Response.json({
-    status: 'ready',
-    message: 'AI generation endpoint ready. Claude integration coming in Phase 3.',
-    request_received: { programTitle, language, subject }
+  // 4. 3-Layer fallback: Claude → Groq → Offline Template
+  let stream: ReadableStream<Uint8Array>
+
+  try {
+    if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === 'YOUR_KEY_HERE') {
+      throw new Error('Claude key not configured')
+    }
+    stream = await generateWithClaude(body)
+    console.log('[AI] Using Claude Haiku')
+  } catch (claudeErr) {
+    console.warn('[AI] Claude failed, trying Groq:', claudeErr)
+    try {
+      if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY === 'YOUR_KEY_HERE') {
+        throw new Error('Groq key not configured')
+      }
+      stream = await generateWithGroq(body)
+      console.log('[AI] Using Groq LLaMA3')
+    } catch (groqErr) {
+      console.warn('[AI] Groq failed, using offline template:', groqErr)
+      stream = await generateOfflineTemplate(body)
+      console.log('[AI] Using Offline Template')
+    }
+  }
+
+  // 5. Stream back to client (SSE)
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    }
   })
 }
