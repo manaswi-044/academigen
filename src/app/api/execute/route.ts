@@ -2,6 +2,7 @@ export const runtime = 'nodejs'
 
 import { executeLimiter } from '@/lib/ratelimit'
 import { createClient } from '@/lib/supabase/server'
+import { executeWithPiston } from '@/lib/execute/piston'
 
 export async function POST(request: Request) {
   const supabase = await createClient()
@@ -20,10 +21,25 @@ export async function POST(request: Request) {
 
   const { code, language } = await request.json()
 
-  // Phase 3: Piston API for C/Java; Pyodide handles Python client-side
-  return Response.json({
-    status: 'ready',
-    message: 'Execution endpoint ready. Piston API integration coming in Phase 3.',
-    request_received: { language, code_length: code?.length }
-  })
+  if (!code || !language) {
+    return Response.json({ error: 'code and language are required' }, { status: 400 })
+  }
+
+  // Python runs client-side via Pyodide — no server needed
+  if (language === 'Python') {
+    return Response.json({
+      note: 'Python executes directly in your browser via Pyodide. No server call needed.',
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      language: 'Python'
+    })
+  }
+
+  try {
+    const result = await executeWithPiston(code, language)
+    return Response.json(result)
+  } catch (err: any) {
+    return Response.json({ error: err.message }, { status: 500 })
+  }
 }
