@@ -1,8 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENERATIVE_AI_API_KEY || "");
 
 export interface GenerateRequest {
   programTitle: string;
@@ -13,33 +11,26 @@ export interface GenerateRequest {
 }
 
 /**
- * Layer 1: Claude Haiku — fast, cheap, streams tokens directly.
+ * Layer 1: Google Gemini 1.5 Flash — fastest and free tier available.
  * Returns a ReadableStream for Server-Sent Events.
  */
-export async function generateWithClaude(
+export async function generateWithGemini(
   params: GenerateRequest
 ): Promise<ReadableStream<Uint8Array>> {
   const prompt = buildPrompt(params);
-
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        const response = await anthropic.messages.create({
-          model: "claude-haiku-4-5",
-          max_tokens: 2000,
-          stream: true,
-          messages: [{ role: "user", content: prompt }],
-        });
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const response = await model.generateContentStream(prompt);
 
-        for await (const event of response) {
-          if (
-            event.type === "content_block_delta" &&
-            event.delta.type === "text_delta"
-          ) {
+        for await (const chunk of response.stream) {
+          const text = chunk.text();
+          if (text) {
             controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ text: event.delta.text })}\n\n`)
+              encoder.encode(`data: ${JSON.stringify({ text })}\n\n`)
             );
           }
         }
@@ -59,7 +50,7 @@ export async function generateWithClaude(
 }
 
 /**
- * Layer 2: Groq LLaMA3 — free fallback if Claude is unavailable.
+ * Layer 2: Groq LLaMA3 — free fallback if Gemini is unavailable.
  */
 export async function generateWithGroq(
   params: GenerateRequest
@@ -169,7 +160,7 @@ export async function generateOfflineTemplate(
   return stream;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────
 
 function buildPrompt(params: GenerateRequest): string {
   return `You are an academic lab record assistant. Generate a structured lab record in Markdown.
