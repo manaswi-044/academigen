@@ -5,7 +5,7 @@ import { Loader2 } from "lucide-react";
 
 // TipTap components are heavy, ensure SSR is strictly disabled for these rich chunks.
 const EditorProvider = dynamic(() => import("@tiptap/react").then(m => m.EditorProvider), { ssr: false });
-const StarterKit = dynamic(() => import("@tiptap/starter-kit").then(m => m.default), { ssr: false });
+const StarterKit = dynamic(() => import("@tiptap/starter-kit").then(m => m.default as any), { ssr: false }) as any;
 
 // Simple wrapper fallback while TipTap parses modules
 function TipTapFallback() {

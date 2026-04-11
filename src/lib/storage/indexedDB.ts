@@ -154,3 +154,64 @@ export async function processSyncQueue(): Promise<void> {
     request.onerror = (e: any) => reject(e.target.error);
   });
 }
+// SUPABASE STORAGE FUNCTIONS (Replaces R2)
+// ============================================================================
+
+/**
+ * Upload a file to Supabase Storage.
+ * Returns the public URL of the uploaded file.
+ *
+ * Key naming convention:
+ *   Screenshots : screenshots/{userId}/{docId}/{timestamp}.png
+ *   PDFs        : exports/{userId}/{docId}/{timestamp}.pdf
+ *   Templates   : templates/{userId}/{timestamp}.pdf
+ */
+export async function uploadFileToSupabase(
+  file: Buffer | Blob,
+  key: string,
+  contentType: string
+): Promise<string> {
+  // Dynamic import to avoid SSR issues
+  const { createClient } = await import("@/lib/supabase/client");
+  const supabase = createClient();
+
+  const BUCKET_NAME = 'academigen-files';
+
+  const body = file instanceof Blob
+    ? Buffer.from(await file.arrayBuffer())
+    : file
+
+  const { error } = await supabase.storage
+    .from(BUCKET_NAME)
+    .upload(key, body, { contentType })
+
+  if (error) {
+    throw new Error(`Failed to upload file to Supabase: ${error.message}`)
+  }
+
+  // Get public URL
+  const { data } = supabase.storage
+    .from(BUCKET_NAME)
+    .getPublicUrl(key)
+
+  return data.publicUrl
+}
+
+/**
+ * Delete a file from Supabase Storage by its key.
+ */
+export async function deleteFileFromSupabase(key: string): Promise<void> {
+  // Dynamic import to avoid SSR issues
+  const { createClient } = await import("@/lib/supabase/client");
+  const supabase = createClient();
+
+  const BUCKET_NAME = 'academigen-files';
+
+  const { error } = await supabase.storage
+    .from(BUCKET_NAME)
+    .remove([key])
+
+  if (error) {
+    throw new Error(`Failed to delete file from Supabase: ${error.message}`)
+  }
+}

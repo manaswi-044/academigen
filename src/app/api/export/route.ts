@@ -2,6 +2,7 @@ export const runtime = 'nodejs'
 
 import { exportLimiter } from '@/lib/ratelimit'
 import { createClient } from '@/lib/supabase/server'
+import { uploadFileToSupabase } from '@/lib/storage/indexedDB'
 
 export async function POST(request: Request) {
   const supabase = await createClient()
@@ -20,11 +21,28 @@ export async function POST(request: Request) {
     }
   }
 
-  const { documentId } = await request.json()
+  const { documentId, fileBuffer, fileType } = await request.json()
 
-  return Response.json({
-    status: 'ready',
-    message: 'Export endpoint ready. PDF generation coming in Phase 3.',
-    request_received: { documentId }
-  })
+  try {
+    const timestamp = Date.now()
+    const key = `exports/${user.id}/${documentId}/${timestamp}.${fileType === 'pdf' ? 'pdf' : 'docx'}`
+    
+    const publicUrl = await uploadFileToSupabase(
+      Buffer.from(fileBuffer),
+      key,
+      fileType === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    )
+
+    return Response.json({
+      status: 'success',
+      message: 'File exported successfully',
+      url: publicUrl,
+      documentId
+    })
+  } catch (error: any) {
+    return Response.json(
+      { error: `Export failed: ${error.message}` },
+      { status: 500 }
+    )
+  }
 }
