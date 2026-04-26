@@ -6,7 +6,7 @@ import { saveDocumentLocally, queueForSync } from "@/lib/storage/indexedDB";
 import { runPythonCode } from "@/lib/execute/pyodide";
 import {
   Sparkles, Play, Save, ArrowLeft, Loader2,
-  CheckCircle2, AlertCircle, Terminal, FileText
+  CheckCircle2, AlertCircle, Terminal, FileText, Download, Wrench
 } from "lucide-react";
 import Link from "next/link";
 
@@ -18,7 +18,7 @@ interface EditorState {
   generatedContent: string;
   code: string;
   output: string;
-  status: "idle" | "generating" | "executing" | "saving" | "done";
+  status: "idle" | "generating" | "executing" | "saving" | "done" | "exporting" | "fixing";
   error: string;
   layer: "" | "claude" | "groq" | "offline";
 }
@@ -149,6 +149,31 @@ export default function EditorPage({ params }: { params: { id: string } }) {
     }
   };
 
+  // ── Auto-Fix Code ──────────────────────────────────────────────────────────
+  const handleFixCode = async () => {
+    setState((s) => ({ ...s, status: "fixing", error: "" }));
+    try {
+      const errorText = state.error || state.output;
+      const res = await fetch("/api/fix-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: state.code, error: errorText, language: state.language }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to fix code");
+      
+      setState((s) => ({ 
+        ...s, 
+        code: data.fixedCode, 
+        status: "idle", 
+        output: "Code fixed by AI! Click Run to test it.",
+        error: ""
+      }));
+    } catch (err: any) {
+      setState((s) => ({ ...s, error: err.message, status: "idle" }));
+    }
+  };
+
   // ── Save ───────────────────────────────────────────────────────────────────
   const handleSave = async () => {
     setState((s) => ({ ...s, status: "saving" }));
@@ -186,7 +211,46 @@ export default function EditorPage({ params }: { params: { id: string } }) {
     setTimeout(() => setState((s) => ({ ...s, status: "idle" })), 2000);
   };
 
-  const isbusy = ["generating", "executing", "saving"].includes(state.status);
+  // ── Export ─────────────────────────────────────────────────────────────────
+  const handleExport = async () => {
+    setState((s) => ({ ...s, status: "exporting", error: "" }));
+    try {
+      const docId = isNew ? crypto.randomUUID() : params.id;
+      // Extract aim, algorithm, result from generated content
+      const aimMatch = state.generatedContent.match(/\*\*Aim\*\*[^\n]*\n([\s\S]*?)(?=\n\*\*|$)/i) || state.generatedContent.match(/Aim:[^\n]*\n([\s\S]*?)(?=\n|$)/i);
+      const algoMatch = state.generatedContent.match(/\*\*Algorithm\*\*[^\n]*\n([\s\S]*?)(?=\n\*\*|$)/i) || state.generatedContent.match(/Algorithm:[^\n]*\n([\s\S]*?)(?=\n|$)/i);
+      const resultMatch = state.generatedContent.match(/\*\*Result\*\*[^\n]*\n([\s\S]*?)(?=\n\*\*|$)/i) || state.generatedContent.match(/Result:[^\n]*\n([\s\S]*?)(?=\n|$)/i);
+
+      const content = {
+        title: state.title || "Untitled Record",
+        subject: state.subject,
+        language: state.language,
+        aim: aimMatch ? aimMatch[1].trim() : "To execute the program.",
+        algorithm: algoMatch ? algoMatch[1].trim() : "1. Start\n2. Execute logic\n3. Stop",
+        code: state.code,
+        output: state.output,
+        result: resultMatch ? resultMatch[1].trim() : "Program executed successfully."
+      };
+
+      const res = await fetch("/api/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentId: docId, content }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Export failed");
+
+      if (data.url) {
+        window.open(data.url, "_blank");
+      }
+      setState((s) => ({ ...s, status: "idle" }));
+    } catch (err: any) {
+      setState((s) => ({ ...s, error: err.message, status: "idle" }));
+    }
+  };
+
+  const isbusy = ["generating", "executing", "saving", "exporting", "fixing"].includes(state.status);
 
   return (
     <div className="flex-1 flex flex-col min-h-screen bg-slate-50 dark:bg-slate-950">
@@ -204,6 +268,14 @@ export default function EditorPage({ params }: { params: { id: string } }) {
         />
         <div className="flex items-center gap-2">
           {state.status === "done" && <span className="text-green-600 text-sm font-medium flex items-center gap-1"><CheckCircle2 className="w-4 h-4" /> Saved</span>}
+          <button
+            onClick={handleExport}
+            disabled={isbusy}
+            className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-xl font-medium text-sm transition-colors disabled:opacity-50"
+          >
+            {state.status === "exporting" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            Export PDF
+          </button>
           <button
             onClick={handleSave}
             disabled={isbusy}
@@ -283,17 +355,32 @@ export default function EditorPage({ params }: { params: { id: string } }) {
           <div>
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Code</span>
-              <button
-                onClick={handleExecute}
-                disabled={isbusy || !state.code}
-                className="flex items-center gap-2 px-4 py-1.5 bg-green-600 hover:bg-green-500 text-white rounded-lg font-medium text-sm disabled:opacity-50 transition-colors"
-              >
-                {state.status === "executing" ? (
-                  <><Loader2 className="w-3 h-3 animate-spin" /> Running...</>
-                ) : (
-                  <><Play className="w-3 h-3" /> Run</>
+              <div className="flex gap-2">
+                {(state.error || (state.output && state.output.toLowerCase().includes("error"))) && (
+                  <button
+                    onClick={handleFixCode}
+                    disabled={isbusy}
+                    className="flex items-center gap-2 px-4 py-1.5 bg-brand-100 hover:bg-brand-200 text-brand-700 dark:bg-brand-900/30 dark:hover:bg-brand-900/50 dark:text-brand-300 rounded-lg font-medium text-sm disabled:opacity-50 transition-colors border border-brand-200 dark:border-brand-800"
+                  >
+                    {state.status === "fixing" ? (
+                      <><Loader2 className="w-3 h-3 animate-spin" /> Fixing...</>
+                    ) : (
+                      <><Wrench className="w-3 h-3" /> Auto-Fix</>
+                    )}
+                  </button>
                 )}
-              </button>
+                <button
+                  onClick={handleExecute}
+                  disabled={isbusy || !state.code}
+                  className="flex items-center gap-2 px-4 py-1.5 bg-green-600 hover:bg-green-500 text-white rounded-lg font-medium text-sm disabled:opacity-50 transition-colors"
+                >
+                  {state.status === "executing" ? (
+                    <><Loader2 className="w-3 h-3 animate-spin" /> Running...</>
+                  ) : (
+                    <><Play className="w-3 h-3" /> Run</>
+                  )}
+                </button>
+              </div>
             </div>
             <textarea
               ref={textareaRef}

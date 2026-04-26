@@ -1,13 +1,8 @@
-export const runtime = 'edge'
+export const runtime = 'nodejs'
 
-import { aiLimiter } from '@/lib/ratelimit'
+import { exportLimiter } from '@/lib/ratelimit'
 import { createClient } from '@/lib/supabase/server'
-import {
-  generateWithGemini,
-  generateWithGroq,
-  generateOfflineTemplate,
-  type GenerateRequest
-} from '@/lib/ai/generate'
+import { uploadFile } from '@/lib/storage/r2'
 
 export async function POST(request: Request) {
   // 1. Auth guard
@@ -18,8 +13,8 @@ export async function POST(request: Request) {
   }
 
   // 2. Rate limit
-  if (aiLimiter) {
-    const { success } = await aiLimiter.limit(user.id)
+  if (exportLimiter) {
+    const { success } = await exportLimiter.limit(user.id)
     if (!success) {
       return Response.json(
         { error: 'Limit reached. Try again in 1 hour.' },
@@ -29,38 +24,43 @@ export async function POST(request: Request) {
   }
 
   // 3. Parse body
-  const body = await request.json() as GenerateRequest
+  const body = await request.json()
+  const { documentId, content } = body
 
-  // 4. 3-Layer fallback: Gemini → Groq → Offline Template
-  let stream: ReadableStream<Uint8Array>
-
-  try {
-    if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY === 'YOUR_KEY_HERE') {
-      throw new Error('Gemini key not configured')
-    }
-    stream = await generateWithGemini(body)
-    console.log('[AI] Using Gemini 1.5 Flash')
-  } catch (geminiErr) {
-    console.warn('[AI] Gemini failed, trying Groq:', geminiErr)
-    try {
-      if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY === 'YOUR_KEY_HERE') {
-        throw new Error('Groq key not configured')
-      }
-      stream = await generateWithGroq(body)
-      console.log('[AI] Using Groq LLaMA3')
-    } catch (groqErr) {
-      console.warn('[AI] Groq failed, using offline template:', groqErr)
-      stream = await generateOfflineTemplate(body)
-      console.log('[AI] Using Offline Template')
-    }
+  if (!documentId || !content) {
+    return Response.json({ error: 'Missing documentId or content' }, { status: 400 })
   }
 
-  // 5. Stream back to client (SSE)
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
+  try {
+    const renderUrl = process.env.RENDER_FASTAPI_URL || 'http://localhost:8000'
+    
+    // 4. Send to FastAPI microservice for PDF generation
+    const response = await fetch(`${renderUrl}/export/pdf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(content)
+    })
+
+    if (!response.ok) {
+      throw new Error(`FastAPI responded with ${response.status}`)
     }
-  })
+
+    const { pdf_bytes } = await response.json()
+    const pdfBuffer = Buffer.from(pdf_bytes, 'hex')
+
+    // 5. Upload to Cloudflare R2
+    const timestamp = Date.now()
+    const key = `exports/${user.id}/${documentId}/${timestamp}.pdf`
+    
+    const publicUrl = await uploadFile(pdfBuffer, key, 'application/pdf')
+
+    return Response.json({
+      success: true,
+      url: publicUrl
+    })
+
+  } catch (err: any) {
+    console.error('[Export Error]', err)
+    return Response.json({ error: err.message }, { status: 500 })
+  }
 }
