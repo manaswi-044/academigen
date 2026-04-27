@@ -3,7 +3,7 @@ export const runtime = 'nodejs'
 import { aiLimiter } from '@/lib/ratelimit'
 import { createClient } from '@/lib/supabase/server'
 import {
-  generateWithClaude,
+  generateWithGemini,
   generateWithGroq,
   generateOfflineTemplate,
   type GenerateRequest
@@ -36,7 +36,7 @@ export async function POST(request: Request) {
     if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === 'YOUR_KEY_HERE') {
       throw new Error('Claude key not configured')
     }
-    stream = await generateWithClaude(body)
+  stream = await generateWithGemini(body)
     console.log('[AI] Using Claude Haiku')
   } catch (claudeErr) {
     console.warn('[AI] Claude failed, trying Groq:', claudeErr)
